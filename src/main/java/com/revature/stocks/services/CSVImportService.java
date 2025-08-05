@@ -1,6 +1,5 @@
 package com.revature.stocks.services;
 
-import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -9,6 +8,8 @@ import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.logging.Logger;
 
+import com.opencsv.CSVReader;
+import com.opencsv.exceptions.CsvValidationException;
 import com.revature.stocks.config.DatabaseConfig;
 import com.revature.stocks.dao.DailyPriceDAO;
 import com.revature.stocks.dao.StockDAO;
@@ -20,103 +21,96 @@ import com.revature.stocks.model.Stock;
  * Handles importing stock data from CSV files
  */
 public class CSVImportService {
-    
+
     private static final Logger logger = Logger.getLogger(CSVImportService.class.getName());
     private DailyPriceDAO dailyPriceDAO;
     private StockDAO stockDAO;
     private DatabaseConfig dbConfig;
-    
+
     // Date formats for parsing CSV dates
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd");
     private static final SimpleDateFormat ALT_DATE_FORMAT = new SimpleDateFormat("dd-MMM-yyyy");
-    
+
     public CSVImportService() {
         this.dailyPriceDAO = new DailyPriceDAO();
         this.stockDAO = new StockDAO();
         this.dbConfig = DatabaseConfig.getInstance();
     }
-    
+
     /**
      * Import data from CSV file
      */
     public boolean importDataFromCSV(String csvFilePath) {
         logger.info("Starting CSV import from: " + csvFilePath);
-        
+
         int totalRecords = 0;
         int successfulRecords = 0;
         int failedRecords = 0;
-        
-        try (BufferedReader reader = new BufferedReader(new FileReader(csvFilePath))) {
-            String line;
+
+        try (CSVReader reader = new CSVReader(new FileReader(csvFilePath))) {
+            String[] fields;
             boolean isFirstLine = true;
-            
-            while ((line = reader.readLine()) != null) {
-                // Skip header line
+
+            while ((fields = reader.readNext()) != null) {
                 if (isFirstLine) {
                     isFirstLine = false;
-                    logger.info("CSV Header: " + line);
+                    logger.info("CSV Header: " + String.join(",", fields));
                     continue;
                 }
-                
+
                 totalRecords++;
-                
                 try {
-                    if (processCSVLine(line)) {
+                    if (processCSVFields(fields)) {
                         successfulRecords++;
                     } else {
                         failedRecords++;
                     }
-                    
+
                     // Log progress every 1000 records
                     if (totalRecords % 1000 == 0) {
-                        logger.info("Processed " + totalRecords + " records. Success: " + 
-                                   successfulRecords + ", Failed: " + failedRecords);
+                        logger.info("Processed " + totalRecords + " records. Success: " +
+                            successfulRecords + ", Failed: " + failedRecords);
                     }
-                    
                 } catch (Exception e) {
                     failedRecords++;
                     logger.warning("Error processing line " + totalRecords + ": " + e.getMessage());
                 }
             }
-            
-            logger.info("CSV import completed. Total: " + totalRecords + 
-                       ", Success: " + successfulRecords + ", Failed: " + failedRecords);
-            
+
+            logger.info("CSV import completed. Total: " + totalRecords +
+                ", Success: " + successfulRecords + ", Failed: " + failedRecords);
+
             return failedRecords == 0;
-            
-        } catch (IOException e) {
+
+        } catch (IOException | CsvValidationException e) {
             logger.severe("Error reading CSV file " + csvFilePath + ": " + e.getMessage());
             return false;
         }
     }
-    
+
     /**
-     * Process a single CSV line
+     * Process a single CSV row
      */
-    private boolean processCSVLine(String line) {
+    private boolean processCSVFields(String[] fields) {
         try {
-            // Split CSV line by comma, handling quoted values
-            String[] fields = parseCSVLine(line);
-            
             if (fields.length < 14) {
-                logger.warning("Insufficient fields in CSV line: " + line);
+                logger.warning("Insufficient fields in CSV line: " + String.join(",", fields));
                 return false;
             }
-            
-            // Parse fields based on expected CSV format
-            // Expected format: SYMBOL,SERIES,DATE,PREV_CLOSE,OPEN,HIGH,LOW,LAST,CLOSE,VWAP,VOLUME,TURNOVER,TRADES,DELIVQTY,DELIV_PER
-            String symbol = fields[0].trim();
-            String series = fields[1].trim();
-            String dateStr = fields[2].trim();
-            
-            // Parse date
+
+            // Column headers in order:
+            // Date,Symbol,Series,Prev Close,Open,High,Low,Last,Close,VWAP,Volume,Turnover,Trades,Deliverable Volume,%Deliverble
+            // In your previous code, symbol was fields[0], series fields[1]...
+            String dateStr = fields[0].trim();
+            String symbol = fields[1].trim();
+            String series = fields[2].trim();
+
             Date tradeDate = parseDate(dateStr);
             if (tradeDate == null) {
                 logger.warning("Invalid date format: " + dateStr);
                 return false;
             }
-            
-            // Parse numeric fields
+
             BigDecimal prevClose = parseBigDecimal(fields[3]);
             BigDecimal openPrice = parseBigDecimal(fields[4]);
             BigDecimal highPrice = parseBigDecimal(fields[5]);
@@ -124,46 +118,38 @@ public class CSVImportService {
             BigDecimal lastPrice = parseBigDecimal(fields[7]);
             BigDecimal closePrice = parseBigDecimal(fields[8]);
             BigDecimal vwap = parseBigDecimal(fields[9]);
-            
             Long volume = parseLong(fields[10]);
             BigDecimal turnover = parseBigDecimal(fields[11]);
             Integer trades = parseInteger(fields[12]);
             Long deliverableVolume = parseLong(fields[13]);
-            BigDecimal deliverablePercentage = fields.length > 14 ? parseBigDecimal(fields[14]) : null;
-            
+            BigDecimal deliverablePercentage = (fields.length > 14) ? parseBigDecimal(fields[14]) : null;
+
             // Validate essential fields
-            if (symbol.isEmpty() || openPrice == null || highPrice == null || 
+            if (symbol.isEmpty() || openPrice == null || highPrice == null ||
                 lowPrice == null || closePrice == null) {
-                logger.warning("Missing essential fields in line: " + line);
+                logger.warning("Missing essential fields in line: " + String.join(",", fields));
                 return false;
             }
-            
+
             // Create DailyPrice object
             DailyPrice dailyPrice = new DailyPrice(
                 symbol, tradeDate, series, prevClose, openPrice, highPrice,
                 lowPrice, lastPrice, closePrice, vwap, volume, turnover,
                 trades, deliverableVolume, deliverablePercentage
             );
-            
+
             // Ensure stock exists
             ensureStockExists(symbol);
-            
+
             // Insert daily price data
             return dailyPriceDAO.insertOrUpdateDailyPrice(dailyPrice);
-            
+
         } catch (Exception e) {
-            logger.severe("Error processing CSV line: " + line + " - " + e.getMessage());
+            logger.severe("Error processing CSV record: " + e.getMessage());
             return false;
         }
     }
-    
-    /**
-     * Parse CSV line handling quoted values
-     */
-    private String[] parseCSVLine(String line) {
-        return line.split(",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", -1);
-    }
-    
+
     /**
      * Parse date from string
      */
@@ -171,16 +157,12 @@ public class CSVImportService {
         if (dateStr == null || dateStr.trim().isEmpty()) {
             return null;
         }
-        
         dateStr = dateStr.replace("\"", "").trim();
-        
         try {
-            // Try primary date format
             java.util.Date utilDate = DATE_FORMAT.parse(dateStr);
             return new Date(utilDate.getTime());
         } catch (ParseException e1) {
             try {
-                // Try alternative date format
                 java.util.Date utilDate = ALT_DATE_FORMAT.parse(dateStr);
                 return new Date(utilDate.getTime());
             } catch (ParseException e2) {
@@ -189,15 +171,11 @@ public class CSVImportService {
             }
         }
     }
-    
-    /**
-     * Parse BigDecimal from string
-     */
+
     private BigDecimal parseBigDecimal(String value) {
         if (value == null || value.trim().isEmpty() || value.equals("-")) {
             return null;
         }
-        
         try {
             value = value.replace("\"", "").replace(",", "").trim();
             return new BigDecimal(value);
@@ -206,15 +184,11 @@ public class CSVImportService {
             return null;
         }
     }
-    
-    /**
-     * Parse Long from string
-     */
+
     private Long parseLong(String value) {
         if (value == null || value.trim().isEmpty() || value.equals("-")) {
             return null;
         }
-        
         try {
             value = value.replace("\"", "").replace(",", "").trim();
             return Long.parseLong(value);
@@ -223,15 +197,11 @@ public class CSVImportService {
             return null;
         }
     }
-    
-    /**
-     * Parse Integer from string
-     */
+
     private Integer parseInteger(String value) {
         if (value == null || value.trim().isEmpty() || value.equals("-")) {
             return null;
         }
-        
         try {
             value = value.replace("\"", "").replace(",", "").trim();
             return Integer.parseInt(value);
@@ -240,7 +210,7 @@ public class CSVImportService {
             return null;
         }
     }
-    
+
     /**
      * Ensure stock exists in database
      */
@@ -257,36 +227,35 @@ public class CSVImportService {
             logger.warning("Error ensuring stock exists for " + symbol + ": " + e.getMessage());
         }
     }
-    
+
     /**
      * Import specific stock data from CSV
      */
     public boolean importStockDataFromCSV(String csvFilePath, String targetSymbol) {
         logger.info("Starting targeted CSV import for symbol: " + targetSymbol + " from: " + csvFilePath);
-        
+
         int totalRecords = 0;
         int successfulRecords = 0;
         int failedRecords = 0;
-        
-        try (BufferedReader reader = new BufferedReader(new FileReader(csvFilePath))) {
-            String line;
+
+        try (CSVReader reader = new CSVReader(new FileReader(csvFilePath))) {
+            String[] fields;
             boolean isFirstLine = true;
-            
-            while ((line = reader.readLine()) != null) {
+
+            while ((fields = reader.readNext()) != null) {
                 if (isFirstLine) {
                     isFirstLine = false;
                     continue;
                 }
-                
-                // Quick check if line contains target symbol
-                if (!line.contains(targetSymbol)) {
+
+                if (!fields[1].trim().equalsIgnoreCase(targetSymbol)) {
                     continue;
                 }
-                
+
                 totalRecords++;
-                
+
                 try {
-                    if (processCSVLine(line)) {
+                    if (processCSVFields(fields)) {
                         successfulRecords++;
                     } else {
                         failedRecords++;
@@ -296,61 +265,56 @@ public class CSVImportService {
                     logger.warning("Error processing line for " + targetSymbol + ": " + e.getMessage());
                 }
             }
-            
-            logger.info("Targeted CSV import completed for " + targetSymbol + 
-                       ". Total: " + totalRecords + ", Success: " + successfulRecords + 
-                       ", Failed: " + failedRecords);
-            
+
+            logger.info("Targeted CSV import completed for " + targetSymbol +
+                ". Total: " + totalRecords + ", Success: " + successfulRecords +
+                ", Failed: " + failedRecords);
+
             return failedRecords == 0;
-            
-        } catch (IOException e) {
+
+        } catch (IOException | CsvValidationException e) {
             logger.severe("Error reading CSV file " + csvFilePath + ": " + e.getMessage());
             return false;
         }
     }
-    
+
     /**
      * Validate CSV file format
      */
     public boolean validateCSVFormat(String csvFilePath) {
-        try (BufferedReader reader = new BufferedReader(new FileReader(csvFilePath))) {
-            String headerLine = reader.readLine();
-            
+        try (CSVReader reader = new CSVReader(new FileReader(csvFilePath))) {
+            String[] headerLine = reader.readNext();
+
             if (headerLine == null) {
                 logger.severe("CSV file is empty: " + csvFilePath);
                 return false;
             }
-            
-            // Check if header contains expected columns
-            String[] headers = headerLine.split(",");
-            logger.info("CSV has " + headers.length + " columns");
-            
+
             // Basic validation - should have at least 14 columns
-            if (headers.length < 14) {
-                logger.severe("CSV file has insufficient columns. Expected at least 14, found: " + headers.length);
+            if (headerLine.length < 14) {
+                logger.severe("CSV file has insufficient columns. Expected at least 14, found: " + headerLine.length);
                 return false;
             }
-            
+
             // Check a few sample lines
             int sampleLines = 0;
-            String line;
-            while ((line = reader.readLine()) != null && sampleLines < 5) {
-                String[] fields = parseCSVLine(line);
+            String[] fields;
+            while ((fields = reader.readNext()) != null && sampleLines < 5) {
                 if (fields.length < 14) {
-                    logger.warning("Sample line has insufficient fields: " + line);
+                    logger.warning("Sample line has insufficient fields: " + String.join(",", fields));
                 }
                 sampleLines++;
             }
-            
+
             logger.info("CSV format validation completed successfully");
             return true;
-            
-        } catch (IOException e) {
+
+        } catch (IOException | CsvValidationException e) {
             logger.severe("Error validating CSV file " + csvFilePath + ": " + e.getMessage());
             return false;
         }
     }
-    
+
     /**
      * Get import statistics
      */
@@ -359,27 +323,27 @@ public class CSVImportService {
             StringBuilder stats = new StringBuilder();
             stats.append("=== CSV IMPORT STATISTICS ===\n");
             stats.append("File: ").append(csvFilePath).append("\n");
-            
-            try (BufferedReader reader = new BufferedReader(new FileReader(csvFilePath))) {
-                String line;
+
+            try (CSVReader reader = new CSVReader(new FileReader(csvFilePath))) {
+                String[] fields;
                 int totalLines = 0;
                 boolean isFirstLine = true;
-                
-                while ((line = reader.readLine()) != null) {
+
+                while ((fields = reader.readNext()) != null) {
                     if (isFirstLine) {
                         isFirstLine = false;
-                        stats.append("Header: ").append(line).append("\n");
+                        stats.append("Header: ").append(String.join(",", fields)).append("\n");
                         continue;
                     }
                     totalLines++;
                 }
-                
+
                 stats.append("Total Data Lines: ").append(totalLines).append("\n");
             }
-            
+
             return stats.toString();
-            
-        } catch (IOException e) {
+
+        } catch (IOException | CsvValidationException e) {
             logger.severe("Error getting import statistics: " + e.getMessage());
             return "Error getting statistics for: " + csvFilePath;
         }
